@@ -1,0 +1,936 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:intl/intl.dart';
+import '../../models/models.dart';
+import '../../providers/app_providers.dart';
+import '../../services/supabase_api.dart' as api;
+import '../../theme/app_theme.dart';
+
+final _singleBookingProvider = FutureProvider.autoDispose.family<List<BookingModel>, String>(
+    (ref, customerId) => api.getCustomerBookings(customerId));
+final _messagesProvider =
+    FutureProvider.autoDispose.family<List<ChatMessage>, String>((ref, conversationId) => api.getMessages(conversationId));
+
+class BookingDetailScreen extends ConsumerStatefulWidget {
+  final String bookingId;
+  const BookingDetailScreen({super.key, required this.bookingId});
+
+  @override
+  ConsumerState<BookingDetailScreen> createState() => _BookingDetailScreenState();
+}
+
+class _BookingDetailScreenState extends ConsumerState<BookingDetailScreen> {
+  int _tab = 0; // 0=details, 1=chat, 2=feedback, 3=complaint
+
+  @override
+  Widget build(BuildContext context) {
+    final profile = ref.watch(authProvider).profile;
+    final bookingsAsync = ref.watch(_singleBookingProvider(profile?.id ?? ''));
+
+    final booking = bookingsAsync.value?.firstWhere(
+      (b) => b.id == widget.bookingId,
+      orElse: () => bookingsAsync.value?.firstOrNull ?? BookingModel(id: widget.bookingId, status: 'pending'),
+    );
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Booking ${booking?.bookingCode ?? widget.bookingId.substring(0, 8)}'),
+      ),
+      body: bookingsAsync.when(
+        data: (_) => booking == null
+            ? const Center(child: Text('Booking not found'))
+            : Column(
+                children: [
+                  // Tab bar
+                  Container(
+                    color: Theme.of(context).colorScheme.surface,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Row(
+                        children: [
+                          _TabChip('Details', 0, _tab, (i) => setState(() => _tab = i)),
+                          _TabChip('Chat', 1, _tab, (i) => setState(() => _tab = i)),
+                          _TabChip('Feedback', 2, _tab, (i) => setState(() => _tab = i)),
+                          _TabChip('Complaint', 3, _tab, (i) => setState(() => _tab = i)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(16),
+                      child: _buildTabContent(booking, profile?.id ?? ''),
+                    ),
+                  ),
+                ],
+              ),
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('Error: $e')),
+      ),
+    );
+  }
+
+  Widget _buildTabContent(BookingModel booking, String userId) {
+    switch (_tab) {
+      case 0:
+        return _DetailsTab(booking: booking, onStatusChanged: () => ref.invalidate(_singleBookingProvider));
+      case 1:
+        return _ChatTab(booking: booking, userId: userId);
+      case 2:
+        return _FeedbackTab(booking: booking, userId: userId);
+      case 3:
+        return _ComplaintTab(booking: booking, userId: userId);
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+}
+
+// ── Tab widgets ───────────────────────────────────────────────
+
+class _TabChip extends StatelessWidget {
+  final String label;
+  final int index;
+  final int current;
+  final ValueChanged<int> onTap;
+
+  const _TabChip(this.label, this.index, this.current, this.onTap);
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = index == current;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: () => onTap(index),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: selected ? AppColors.primary : AppColors.darkBorder),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                color: selected ? Colors.white : null,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                fontSize: 13,
+              )),
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailsTab extends ConsumerStatefulWidget {
+  final BookingModel booking;
+  final VoidCallback onStatusChanged;
+
+  const _DetailsTab({required this.booking, required this.onStatusChanged});
+
+  @override
+  ConsumerState<_DetailsTab> createState() => _DetailsTabState();
+}
+
+class _DetailsTabState extends ConsumerState<_DetailsTab> {
+  bool _showCounterForm = false;
+  DateTime? _counterDate;
+  TimeOfDay? _counterTime;
+  final _counterNoteCtrl = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _counterNoteCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _acceptReschedule() async {
+    setState(() => _busy = true);
+    try {
+      await api.acceptReschedule(widget.booking.id);
+      widget.onStatusChanged();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Reschedule accepted! Time updated.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) showSnack(context, e.toString(), isError: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _submitCounterProposal() async {
+    if (_counterDate == null || _counterTime == null) {
+      showSnack(context, 'Please select both date and time', isError: true);
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final proposedDt = DateTime(
+        _counterDate!.year, _counterDate!.month, _counterDate!.day,
+        _counterTime!.hour, _counterTime!.minute,
+      );
+      await api.counterReschedule(
+        widget.booking.id,
+        proposedDt,
+        note: _counterNoteCtrl.text.trim(),
+      );
+      widget.onStatusChanged();
+      if (mounted) {
+        setState(() => _showCounterForm = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Counter-proposal sent to provider.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) showSnack(context, e.toString(), isError: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final booking = widget.booking;
+    final fmt = DateFormat('dd MMM yyyy, hh:mm a');
+    final rescheduleCount = booking.rescheduleCount;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Booking Details', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                const SizedBox(height: 12),
+                _DetailRow(Icons.home_repair_service_outlined, 'Service', booking.serviceTitle ?? '-'),
+                _DetailRow(Icons.person_outline, 'Provider', booking.providerName ?? '-'),
+                if (booking.scheduledDate != null)
+                  _DetailRow(Icons.calendar_today_outlined, 'Scheduled', fmt.format(booking.scheduledDate!.toLocal())),
+                if (booking.address != null)
+                  _DetailRow(Icons.location_on_outlined, 'Address', booking.address!),
+                const SizedBox(height: 10),
+                _StatusBadge(status: booking.status),
+                if (rescheduleCount > 0) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '⚠️ $rescheduleCount/3 reschedules by provider',
+                    style: TextStyle(fontSize: 11, color: AppColors.warning),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Actions', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                const SizedBox(height: 12),
+
+                // Provider requested reschedule — show proposed time + 3 options
+                if (booking.status == 'reschedule_requested') ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('🔄 Provider wants to reschedule to:',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                        const SizedBox(height: 4),
+                        Text(
+                          booking.proposedDate != null ? fmt.format(booking.proposedDate!.toLocal()) : 'N/A',
+                          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                        ),
+                        if (booking.rescheduleNote != null && booking.rescheduleNote!.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text('"${booking.rescheduleNote}"',
+                              style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: AppColors.darkMuted)),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _busy ? null : _acceptReschedule,
+                      child: _busy
+                          ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('✅ Accept New Time'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: _busy ? null : () => setState(() => _showCounterForm = !_showCounterForm),
+                      child: const Text('🔄 Propose Different Time'),
+                    ),
+                  ),
+                  if (_showCounterForm) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppColors.darkBorder),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Suggest a time:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  icon: const Icon(Icons.calendar_today, size: 14),
+                                  label: Text(_counterDate != null
+                                      ? DateFormat('dd MMM yyyy').format(_counterDate!)
+                                      : 'Pick Date'),
+                                  onPressed: () async {
+                                    final d = await showDatePicker(
+                                      context: context,
+                                      initialDate: DateTime.now().add(const Duration(days: 1)),
+                                      firstDate: DateTime.now(),
+                                      lastDate: DateTime.now().add(const Duration(days: 90)),
+                                    );
+                                    if (d != null) setState(() => _counterDate = d);
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  icon: const Icon(Icons.access_time, size: 14),
+                                  label: Text(_counterTime != null
+                                      ? _counterTime!.format(context)
+                                      : 'Pick Time'),
+                                  onPressed: () async {
+                                    final t = await showTimePicker(
+                                      context: context,
+                                      initialTime: TimeOfDay.now(),
+                                    );
+                                    if (t != null) setState(() => _counterTime = t);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: _counterNoteCtrl,
+                            decoration: const InputDecoration(hintText: 'Reason (optional)', isDense: true),
+                            maxLines: 2,
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton(
+                                  onPressed: _busy ? null : _submitCounterProposal,
+                                  child: _busy
+                                      ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                      : const Text('Send Proposal'),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              OutlinedButton(
+                                onPressed: () => setState(() => _showCounterForm = false),
+                                child: const Text('Cancel'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                ],
+
+                // Waiting for provider to respond to customer counter
+                if (booking.status == 'reschedule_counter') ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('⏳ Waiting for provider to respond',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Your proposed time: ${booking.proposedDate != null ? fmt.format(booking.proposedDate!.toLocal()) : "N/A"}',
+                          style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13),
+                        ),
+                        if (booking.rescheduleNote != null && booking.rescheduleNote!.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text('"${booking.rescheduleNote}"',
+                              style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: AppColors.darkMuted)),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.receipt_outlined, size: 16),
+                    label: const Text('Download Invoice'),
+                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Invoice download coming soon')),
+                    ),
+                  ),
+                ),
+                if (!['completed', 'cancelled', 'rejected'].contains(booking.status)) ...[
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+                      onPressed: _busy ? null : () async {
+                        setState(() => _busy = true);
+                        await api.updateBookingStatus(booking.id, 'cancelled');
+                        widget.onStatusChanged();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text('Booking cancelled'), backgroundColor: Colors.red));
+                        }
+                        if (mounted) setState(() => _busy = false);
+                      },
+                      child: const Text('Cancel Booking'),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DetailRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _DetailRow(this.icon, this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 15, color: AppColors.darkMuted),
+          const SizedBox(width: 8),
+          Text('$label: ', style: Theme.of(context).textTheme.bodySmall),
+          Expanded(
+            child: Text(value,
+                style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Chat Tab ──────────────────────────────────────────────────
+
+class _ChatTab extends ConsumerStatefulWidget {
+  final BookingModel booking;
+  final String userId;
+
+  const _ChatTab({required this.booking, required this.userId});
+
+  @override
+  ConsumerState<_ChatTab> createState() => _ChatTabState();
+}
+
+class _ChatTabState extends ConsumerState<_ChatTab> {
+  final _messageCtrl = TextEditingController();
+  final _scrollCtrl = ScrollController();
+  ConversationModel? _conversation;
+  bool _sending = false;
+  RealtimeChannel? _channel;
+
+  @override
+  void initState() {
+    super.initState();
+    _initConversation();
+  }
+
+  Future<void> _initConversation() async {
+    if (!api.isBookingChatEnabled(widget.booking.status)) return;
+    try {
+      final conv = await api.ensureConversationForBooking(widget.booking.id);
+      if (mounted) {
+        setState(() => _conversation = conv);
+        _subscribeToMessages(conv.id);
+      }
+    } catch (_) {}
+  }
+
+  void _subscribeToMessages(String conversationId) {
+    _channel = Supabase.instance.client
+        .channel('messages:$conversationId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'messages',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'conversation_id',
+            value: conversationId,
+          ),
+          callback: (_) => ref.invalidate(_messagesProvider),
+        )
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    _messageCtrl.dispose();
+    _scrollCtrl.dispose();
+    _channel?.unsubscribe();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final msg = _messageCtrl.text.trim();
+    if (msg.isEmpty || _conversation == null) return;
+    setState(() => _sending = true);
+    _messageCtrl.clear();
+    try {
+      await api.sendMessage(
+        conversationId: _conversation!.id,
+        senderId: widget.userId,
+        message: msg,
+      );
+      ref.invalidate(_messagesProvider);
+    } catch (e) {
+      if (mounted) showSnack(context, e.toString(), isError: true);
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!api.isBookingChatEnabled(widget.booking.status)) {
+      return Card(
+        child: const Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('Chat will be available after provider accepts the booking.'),
+        ),
+      );
+    }
+
+    final messagesAsync = _conversation != null
+        ? ref.watch(_messagesProvider(_conversation!.id))
+        : const AsyncValue<List<ChatMessage>>.loading();
+
+    return Column(
+      children: [
+        Card(
+          child: SizedBox(
+            height: 350,
+            child: messagesAsync.when(
+              data: (messages) => messages.isEmpty
+                  ? const Center(child: Text('No messages yet. Say hello!'))
+                  : ListView.builder(
+                      controller: _scrollCtrl,
+                      padding: const EdgeInsets.all(12),
+                      itemCount: messages.length,
+                      itemBuilder: (ctx, i) {
+                        final m = messages[i];
+                        final mine = m.senderId == widget.userId;
+                        return _ChatBubble(message: m, isMine: mine);
+                      },
+                    ),
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (e, _) => Center(child: Text('Error: $e')),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _messageCtrl,
+                decoration: const InputDecoration(hintText: 'Type a message...'),
+                onSubmitted: (_) => _send(),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: _sending ? null : _send,
+              style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16)),
+              child: _sending
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                  : const Icon(Icons.send_rounded),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ChatBubble extends StatelessWidget {
+  final ChatMessage message;
+  final bool isMine;
+
+  const _ChatBubble({required this.message, required this.isMine});
+
+  @override
+  Widget build(BuildContext context) {
+    final fmt = DateFormat('hh:mm a');
+    return Align(
+      alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: isMine ? AppColors.primary : Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isMine ? 16 : 4),
+            bottomRight: Radius.circular(isMine ? 4 : 16),
+          ),
+          border: isMine ? null : Border.all(color: AppColors.darkBorder),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (message.message != null && message.message!.isNotEmpty)
+              Text(message.message!,
+                  style: TextStyle(
+                      color: isMine ? Colors.white : null,
+                      fontSize: 14)),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  fmt.format(message.createdAt),
+                  style: TextStyle(
+                      fontSize: 10,
+                      color: isMine ? Colors.white70 : AppColors.darkMuted),
+                ),
+                if (isMine && message.isRead) ...[
+                  const SizedBox(width: 4),
+                  const Icon(Icons.done_all, size: 12, color: Colors.white70),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Feedback Tab ──────────────────────────────────────────────
+
+class _FeedbackTab extends ConsumerStatefulWidget {
+  final BookingModel booking;
+  final String userId;
+
+  const _FeedbackTab({required this.booking, required this.userId});
+
+  @override
+  ConsumerState<_FeedbackTab> createState() => _FeedbackTabState();
+}
+
+class _FeedbackTabState extends ConsumerState<_FeedbackTab> {
+  int _rating = 5;
+  final _commentCtrl = TextEditingController();
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _commentCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    setState(() => _loading = true);
+    try {
+      await api.submitFeedback(
+        bookingId: widget.booking.id,
+        providerId: widget.booking.providerId ?? '',
+        customerId: widget.userId,
+        rating: _rating,
+        comment: _commentCtrl.text.trim(),
+      );
+      _commentCtrl.clear();
+      if (mounted) showSnack(context, 'Feedback submitted. Thank you!');
+    } catch (e) {
+      if (mounted) showSnack(context, e.toString(), isError: true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Leave Feedback', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const SizedBox(height: 16),
+            const Text('Rating', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Row(
+              children: List.generate(5, (i) {
+                final star = i + 1;
+                return GestureDetector(
+                  onTap: () => setState(() => _rating = star),
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: Icon(
+                      star <= _rating ? Icons.star_rounded : Icons.star_border_rounded,
+                      color: AppColors.warning,
+                      size: 36,
+                    ),
+                  ),
+                );
+              }),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _commentCtrl,
+              maxLines: 3,
+              decoration: const InputDecoration(hintText: 'Share feedback for the provider...'),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _loading ? null : _submit,
+                child: _loading
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                    : const Text('Submit Feedback'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Complaint Tab ─────────────────────────────────────────────
+
+class _ComplaintTab extends ConsumerStatefulWidget {
+  final BookingModel booking;
+  final String userId;
+
+  const _ComplaintTab({required this.booking, required this.userId});
+
+  @override
+  ConsumerState<_ComplaintTab> createState() => _ComplaintTabState();
+}
+
+class _ComplaintTabState extends ConsumerState<_ComplaintTab> {
+  final _subjectCtrl = TextEditingController();
+  final _commentCtrl = TextEditingController();
+  bool _loading = false;
+  bool _checkingSubmission = true;
+  bool _submitted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSubmissionStatus();
+  }
+
+  Future<void> _loadSubmissionStatus() async {
+    try {
+      final submitted = await api.hasSubmittedComplaint(
+        bookingId: widget.booking.id,
+        customerId: widget.userId,
+      );
+      if (mounted) setState(() => _submitted = submitted);
+    } catch (_) {
+      // Keep the form available if the status lookup fails; the database still
+      // enforces one complaint per booking.
+    } finally {
+      if (mounted) setState(() => _checkingSubmission = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _subjectCtrl.dispose();
+    _commentCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_subjectCtrl.text.isEmpty) {
+      showSnack(context, 'Subject is required', isError: true);
+      return;
+    }
+    setState(() => _loading = true);
+    try {
+      await api.submitComplaint(
+        bookingId: widget.booking.id,
+        providerId: widget.booking.providerId ?? '',
+        customerId: widget.userId,
+        serviceId: widget.booking.serviceId ?? '',
+        subject: _subjectCtrl.text.trim(),
+        comment: _commentCtrl.text.trim(),
+      );
+      _subjectCtrl.clear();
+      _commentCtrl.clear();
+      if (mounted) {
+        setState(() => _submitted = true);
+        showSnack(context, 'Complaint submitted successfully.');
+      }
+    } catch (e) {
+      if (mounted) showSnack(context, e.toString(), isError: true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_checkingSubmission) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_submitted) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('Complaint already submitted for this booking. We will get in touch with you within 2-7 working days.'),
+        ),
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Submit Complaint', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _subjectCtrl,
+              decoration: const InputDecoration(
+                hintText: 'Subject *',
+                prefixIcon: Icon(Icons.topic_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _commentCtrl,
+              maxLines: 4,
+              decoration: const InputDecoration(hintText: 'Describe the issue...'),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+                onPressed: _loading ? null : _submit,
+                child: _loading
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                    : const Text('Submit Complaint'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Shared ────────────────────────────────────────────────────
+
+Color _statusColor(String status) {
+  switch (status) {
+    case 'completed':
+      return AppColors.success;
+    case 'cancelled':
+    case 'rejected':
+      return AppColors.danger;
+    default:
+      return AppColors.warning;
+  }
+}
+
+class _StatusBadge extends StatelessWidget {
+  final String status;
+  const _StatusBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _statusColor(status);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Text(
+        status.replaceAll('_', ' ').toUpperCase(),
+        style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+}

@@ -1,0 +1,1264 @@
+﻿import { motion, AnimatePresence } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import {
+  ArrowRight,
+  BadgeCheck,
+  BriefcaseBusiness,
+  Handshake,
+  MoveRight,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Calendar,
+  Code,
+  Eye,
+  LayoutGrid,
+  Lightbulb,
+  MapPin,
+  Rocket,
+  Star,
+  Target,
+  TrendingUp,
+  Users,
+} from "lucide-react";
+import { getLucideIcon } from "@/utils/lucide";
+import {
+  useCategoriesQuery,
+  useProviderQuery,
+  useProvidersQuery,
+  useServiceQuery,
+  useServicesQuery,
+} from "@/hooks/use-queries";
+import { supabase } from "@/lib/supabase";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { ServiceCard } from "@/components/common/service-card";
+import { ProviderCard } from "@/components/common/provider-card";
+import { LocationSelector } from "@/components/common/location-selector";
+import { SectionHeader } from "@/components/common/section-header";
+import { LoadingGrid } from "@/components/ui/loading-grid";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Badge } from "@/components/ui/badge";
+import heroConsultation from "@/assets/landing-hero-consultation.png";
+import aboutHeroImage from "@/assets/about-hero.png";
+import cleaningImage from "@/assets/cleaning.jpg";
+import providerGrowthImage from "@/assets/cyber_security.jpg";
+import nurseImage from "@/assets/nursing.jpg";
+import relocationImage from "@/assets/relocation.jpg";
+import markImage from "@/assets/mark.jpg";
+import zaraImage from "@/assets/zara.jpg";
+import joyImage from "@/assets/joy.jpg";
+
+const fade = {
+  initial: { opacity: 0, y: 10 },
+  animate: { opacity: 1, y: 0 },
+  transition: { duration: 0.35 },
+};
+
+const featuredPros = [
+  {
+    title: "Elite Deep Cleaning",
+    rating: "4.9",
+    price: "₹85.00",
+    image: cleaningImage,
+    text: "Complete sanitation and organization for luxury homes and recurring care.",
+  },
+  {
+    title: "In-Home Nursing",
+    rating: "5.0",
+    price: "₹820.00",
+    image: nurseImage,
+    text: "Specialized home care for recovery, elder support, and daily comfort.",
+  },
+  {
+    title: "Premium Relocation",
+    rating: "4.8",
+    price: "₹2250.00",
+    image: relocationImage,
+    text: "Full-service white glove moving for homes, offices, and delicate items.",
+  },
+  {
+    title: "IT & Cybersecurity",
+    rating: "4.9",
+    price: "₹395.00",
+    image: providerGrowthImage,
+    text: "Home network audits, device protection, and professional troubleshooting.",
+  },
+];
+
+function HeroCarousel({ fallbackSrc }) {
+  const [slides, setSlides] = useState([]);
+  const [active, setActive] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const timerRef = useRef(null);
+
+  // Fetch carousel images from Supabase
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from("hero_carousel")
+          .select("id, url, alt")
+          .order("display_order", { ascending: true });
+        if (!cancelled && data && !error) {
+          setSlides(data);
+        }
+      } catch (_) {
+        // silently fall back to static image
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const effectiveSlides = slides.length > 0
+    ? slides
+    : [{ id: "fallback", url: fallbackSrc, alt: "Professional consultation" }];
+
+  const prev = useCallback(() =>
+    setActive((i) => (i - 1 + effectiveSlides.length) % effectiveSlides.length),
+    [effectiveSlides.length]);
+
+  const next = useCallback(() =>
+    setActive((i) => (i + 1) % effectiveSlides.length),
+    [effectiveSlides.length]);
+
+  // Auto-advance
+  useEffect(() => {
+    if (paused || effectiveSlides.length <= 1) return;
+    timerRef.current = setInterval(next, 4000);
+    return () => clearInterval(timerRef.current);
+  }, [paused, next, effectiveSlides.length]);
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}>
+      {/* Main frame */}
+      <div className="overflow-hidden rounded-4xl border border-blue-100 bg-white p-2 shadow-[0_28px_80px_rgba(44,77,193,0.18)]">
+        <div className="relative h-80 w-full rounded-3xl sm:h-[430px] lg:h-[520px]">
+          <AnimatePresence initial={false} mode="wait">
+            <motion.img
+              key={effectiveSlides[active]?.id ?? active}
+              src={effectiveSlides[active]?.url}
+              alt={effectiveSlides[active]?.alt ?? "Hero image"}
+              className="absolute inset-0 h-full w-full rounded-3xl object-cover"
+              initial={{ opacity: 0, scale: 1.04 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.97 }}
+              transition={{ duration: 0.55, ease: "easeInOut" }}
+            />
+          </AnimatePresence>
+
+          {/* Gradient overlay for controls */}
+          {effectiveSlides.length > 1 && (
+            <div className="absolute inset-0 rounded-3xl bg-linear-to-t from-black/30 via-transparent to-transparent" />
+          )}
+        </div>
+      </div>
+
+      {/* Prev / Next arrows — only if multiple slides */}
+      {effectiveSlides.length > 1 && (
+        <>
+          <button
+            onClick={prev}
+            aria-label="Previous slide"
+            className="absolute left-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/80 p-2 shadow-lg backdrop-blur-sm transition hover:bg-white hover:scale-110 active:scale-95">
+            <svg className="h-5 w-5 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <button
+            onClick={next}
+            aria-label="Next slide"
+            className="absolute right-4 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/80 p-2 shadow-lg backdrop-blur-sm transition hover:bg-white hover:scale-110 active:scale-95">
+            <svg className="h-5 w-5 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+
+          {/* Dot navigation */}
+          <div className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 gap-2">
+            {effectiveSlides.map((_, i) => (
+              <button
+                key={i}
+                onClick={() => setActive(i)}
+                aria-label={`Go to slide ${i + 1}`}
+                className={`rounded-full transition-all duration-300 ${
+                  i === active
+                    ? "w-6 h-2.5 bg-white shadow"
+                    : "w-2.5 h-2.5 bg-white/50 hover:bg-white/80"
+                }`}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function LandingPage() {
+
+  return (
+    <motion.div
+      className="public-marketing relative left-1/2 w-screen -translate-x-1/2 space-y-0 overflow-hidden bg-[#f6f8ff] text-slate-900 dark:bg-background dark:text-foreground"
+      {...fade}>
+      <section className="px-4 pb-18 pt-8 lg:px-8">
+        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[1.02fr_1fr] lg:items-center">
+          <div className="space-y-7">
+            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              Connecting skilled hands with local needs
+            </div>
+            <div className="space-y-4">
+              <h1 className="max-w-xl text-4xl font-black leading-tight text-slate-950 lg:text-6xl">
+                Quality Services
+                <br />
+                <span className="text-blue-700">Meet Empowered Pros.</span>
+              </h1>
+              <p className="max-w-lg text-base leading-7 text-slate-600">
+                Whether you&apos;re looking for elite home care or seeking to grow your own service business, SevaLink
+                is the bridge to excellence and professional freedom.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-6">
+              <div className="flex items-center gap-3">
+                <div className="flex -space-x-3">
+                  {[zaraImage, joyImage, markImage].map((avatar) => (
+                    <img
+                      key={avatar}
+                      src={avatar}
+                      alt="Trusted provider"
+                      className="h-10 w-10 rounded-full border-2 border-white object-cover shadow-sm"
+                    />
+                  ))}
+                </div>
+                <p className="text-sm text-slate-500">Trusted ecosystem</p>
+              </div>
+              <Link
+                to="/register?type=provider"
+                className="inline-flex items-center gap-1 text-sm font-semibold text-blue-700 hover:text-blue-800">
+                Register your business
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+          </div>
+
+          <HeroCarousel fallbackSrc={heroConsultation} />
+
+        </div>
+      </section>
+
+      <section className="bg-card px-4 py-14 lg:px-8">
+        <div className="mx-auto max-w-7xl space-y-8">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">Explore SevaLink</p><h2 className="mt-2 text-3xl font-black text-foreground">Services for Every Need</h2><p className="mt-2 text-sm text-muted-foreground">Find skilled professionals for the services you need, all in one place.</p></div><Link to="/services" className="inline-flex items-center gap-1 text-sm font-semibold text-primary">Explore all services <ArrowRight className="h-4 w-4" /></Link></div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{[{title:"Home Services",icon:Sparkles,tone:"bg-amber-500/10 text-amber-600"},{title:"Healthcare",icon:ShieldCheck,tone:"bg-rose-500/10 text-rose-600"},{title:"Repairs & Maintenance",icon:BriefcaseBusiness,tone:"bg-blue-500/10 text-blue-600"},{title:"Cleaning",icon:Handshake,tone:"bg-emerald-500/10 text-emerald-600"},{title:"Moving & Logistics",icon:MoveRight,tone:"bg-violet-500/10 text-violet-600"},{title:"Professional Services",icon:BadgeCheck,tone:"bg-cyan-500/10 text-cyan-600"},{title:"Easy Booking",icon:Calendar,tone:"bg-orange-500/10 text-orange-600"},{title:"Local Experts",icon:MapPin,tone:"bg-primary/10 text-primary"}].map(({title,icon:Icon,tone})=><Link key={title} to="/services" className="flex items-center gap-4 rounded-2xl border bg-background p-4 shadow-sm transition hover:-translate-y-1 hover:border-primary/40"><div className={"flex h-12 w-12 shrink-0 items-center justify-center rounded-xl "+tone}><Icon className="h-6 w-6" /></div><div><h3 className="font-semibold text-foreground">{title}</h3><p className="mt-1 text-xs text-muted-foreground">Verified professionals</p></div></Link>)}</div>
+        </div>
+      </section>
+      <section className="bg-muted/40 px-4 py-14 lg:px-8"><div className="mx-auto max-w-7xl space-y-8"><div className="text-center"><h2 className="text-3xl font-black text-foreground">How SevaLink Works</h2><p className="mt-2 text-sm text-muted-foreground">Getting your service is simple and easy.</p></div><div className="grid gap-8 md:grid-cols-3">{[{number:"01",title:"Find",text:"Search for the service you need.",icon:Search},{number:"02",title:"Choose",text:"Compare providers, ratings and service details.",icon:Users},{number:"03",title:"Book",text:"Select a provider and book the service.",icon:Calendar}].map(({number,title,text,icon:Icon})=><div key={number} className="flex flex-col items-center text-center"><div className="mb-4 flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-full bg-primary/10 text-sm font-bold text-primary">{number}</span><div className="grid h-14 w-14 place-items-center rounded-full bg-primary text-white"><Icon className="h-6 w-6" /></div></div><h3 className="text-lg font-bold text-foreground">{title}</h3><p className="mt-1 text-sm text-muted-foreground">{text}</p></div>)}</div></div></section>
+      <section className="bg-card px-4 py-14 lg:px-8"><div className="mx-auto max-w-7xl space-y-8"><div className="text-center"><h2 className="text-3xl font-black text-foreground">Why Choose SevaLink?</h2><p className="mt-2 text-sm text-muted-foreground">A safer, smarter and simpler way to find local services.</p></div><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{[{title:"Trusted Providers",text:"Connect with verified service professionals.",icon:ShieldCheck},{title:"Ratings & Reviews",text:"Make better decisions with real feedback.",icon:BadgeCheck},{title:"Local Services",text:"Find providers in your area.",icon:MapPin},{title:"Easy Booking",text:"Request and manage services in one place.",icon:Calendar}].map(({title,text,icon:Icon})=><div key={title} className="rounded-2xl border bg-background p-5 text-center shadow-sm"><div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl bg-primary/10 text-primary"><Icon className="h-6 w-6" /></div><h3 className="font-semibold text-foreground">{title}</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">{text}</p></div>)}</div></div></section>
+      <section className="bg-muted/40 px-4 py-14 lg:px-8"><div className="mx-auto max-w-7xl space-y-8"><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h2 className="text-3xl font-black text-foreground">Meet Our Service Providers</h2><p className="mt-2 text-sm text-muted-foreground">Discover skilled professionals ready to help.</p></div><Link to="/providers" className="inline-flex items-center gap-1 text-sm font-semibold text-primary">View all providers <ArrowRight className="h-4 w-4" /></Link></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{featuredPros.map(item=><article key={item.title} className="overflow-hidden rounded-2xl border bg-card shadow-sm"><img src={item.image} alt={item.title} className="h-40 w-full object-cover" /><div className="space-y-3 p-4"><div className="flex items-start justify-between gap-2"><h3 className="font-bold text-foreground">{item.title}</h3><span className="rounded-full bg-amber-500/10 px-2 py-1 text-xs font-semibold text-amber-600">? {item.rating}</span></div><p className="text-sm leading-6 text-muted-foreground">{item.text}</p><Link to="/login"><Button variant="outline" className="w-full rounded-xl border-primary/30 text-primary">View Profile <ArrowRight className="ml-1 h-4 w-4" /></Button></Link></div></article>)}</div></div></section>
+      <section className="px-4 pb-14 lg:px-8"><div className="mx-auto max-w-7xl rounded-2xl bg-primary p-8 text-center text-white shadow-sm sm:p-12"><h2 className="text-3xl font-black">Ready to Find the Right Service?</h2><p className="mx-auto mt-2 max-w-xl text-sm text-white/80">Discover skilled professionals for your everyday needs with SevaLink.</p><div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row"><Link to="/services"><Button className="rounded-xl bg-white text-primary">Find a Service <ArrowRight className="ml-1 h-4 w-4" /></Button></Link><Link to="/register?type=provider"><Button variant="outline" className="rounded-xl border-white/40 bg-transparent text-white">Become a Provider</Button></Link></div></div></section>
+    </motion.div>
+  );
+}
+
+// Palette of light background + matching text/icon colours
+const CARD_PALETTES = [
+  { bg: 'bg-blue-50 dark:bg-blue-950/40', icon: 'text-blue-600 dark:text-blue-400', iconBg: 'bg-blue-100 dark:bg-blue-900/50', border: 'border-blue-200 dark:border-blue-800' },
+  { bg: 'bg-violet-50 dark:bg-violet-950/40', icon: 'text-violet-600 dark:text-violet-400', iconBg: 'bg-violet-100 dark:bg-violet-900/50', border: 'border-violet-200 dark:border-violet-800' },
+  { bg: 'bg-emerald-50 dark:bg-emerald-950/40', icon: 'text-emerald-600 dark:text-emerald-400', iconBg: 'bg-emerald-100 dark:bg-emerald-900/50', border: 'border-emerald-200 dark:border-emerald-800' },
+  { bg: 'bg-amber-50 dark:bg-amber-950/40', icon: 'text-amber-600 dark:text-amber-400', iconBg: 'bg-amber-100 dark:bg-amber-900/50', border: 'border-amber-200 dark:border-amber-800' },
+  { bg: 'bg-rose-50 dark:bg-rose-950/40', icon: 'text-rose-600 dark:text-rose-400', iconBg: 'bg-rose-100 dark:bg-rose-900/50', border: 'border-rose-200 dark:border-rose-800' },
+  { bg: 'bg-cyan-50 dark:bg-cyan-950/40', icon: 'text-cyan-600 dark:text-cyan-400', iconBg: 'bg-cyan-100 dark:bg-cyan-900/50', border: 'border-cyan-200 dark:border-cyan-800' },
+  { bg: 'bg-fuchsia-50 dark:bg-fuchsia-950/40', icon: 'text-fuchsia-600 dark:text-fuchsia-400', iconBg: 'bg-fuchsia-100 dark:bg-fuchsia-900/50', border: 'border-fuchsia-200 dark:border-fuchsia-800' },
+  { bg: 'bg-orange-50 dark:bg-orange-950/40', icon: 'text-orange-600 dark:text-orange-400', iconBg: 'bg-orange-100 dark:bg-orange-900/50', border: 'border-orange-200 dark:border-orange-800' },
+]
+
+export function CategoriesPage() {
+  const { data, isLoading } = useCategoriesQuery();
+  const [search, setSearch] = useState("");
+
+  const filtered = useMemo(() => {
+    if (!search) return data || [];
+    return (data || []).filter((c) => c.name.toLowerCase().includes(search.toLowerCase()));
+  }, [data, search]);
+
+  if (isLoading) return <LoadingGrid count={6} />;
+
+  return (
+    <motion.div {...fade}>
+      <SectionHeader title="Service Categories" subtitle="Find by home, business, and lifestyle needs." />
+      <div className="mb-6 flex gap-3">
+        <Input
+          placeholder="Search categories…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-xs"
+        />
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {filtered.map((category, i) => {
+          const palette = CARD_PALETTES[i % CARD_PALETTES.length];
+          const Icon = getLucideIcon(category.icon);
+          return (
+            <Link key={category.id} to={`/services?category=${category.id}`}>
+              <motion.div
+                whileHover={{ y: -4, scale: 1.02 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+                className={`group flex flex-col gap-4 rounded-2xl border p-5 transition-shadow hover:shadow-lg cursor-pointer ${palette.bg} ${palette.border}`}
+              >
+                <div className={`inline-flex w-fit rounded-xl p-3 ${palette.iconBg}`}>
+                  <Icon className={`h-6 w-6 ${palette.icon}`} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-foreground">{category.name}</h3>
+                  {category.description && (
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{category.description}</p>
+                  )}
+                </div>
+                <span className={`mt-auto inline-flex items-center gap-1 text-xs font-semibold ${palette.icon}`}>
+                  Browse services <ArrowRight className="h-3.5 w-3.5" />
+                </span>
+              </motion.div>
+            </Link>
+          );
+        })}
+      </div>
+    </motion.div>
+  );
+}
+
+export function ServicesPage() {
+  const categories = useCategoriesQuery();
+  const { data, isLoading } = useServicesQuery();
+  const [selectedCategoryId, setSelectedCategoryId] = useState("all");
+  const [location, setLocation] = useState("");
+
+  const filteredServices = useMemo(() => {
+    if (selectedCategoryId === "all") return data || [];
+
+    return (data || []).filter(
+      (service) =>
+        String(service.category_id) === String(selectedCategoryId)
+    );
+  }, [data, selectedCategoryId]);
+
+  return (
+    <motion.div {...fade}>
+
+
+      {/* =====================================================
+          CUSTOMER WORKFLOW
+          ===================================================== */}
+      <section className="mb-5 mt-10 rounded-2xl border bg-card p-6 shadow-sm md:p-8">
+
+        <div className="text-center">
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
+            Simple & Easy
+          </p>
+
+          <h2 className="mt-2 text-2xl font-bold text-foreground md:text-3xl">
+            How to Book a Service
+          </h2>
+
+          <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+            Getting the service you need is simple. Follow these four steps
+            to find a trusted provider and book your service.
+          </p>
+        </div>
+
+
+        {/* Workflow */}
+        <div className="relative mt-10">
+
+          {/* Connecting Line - Desktop */}
+          <div className="absolute left-[12%] right-[12%] top-6 hidden h-px bg-border md:block" />
+
+          <div className="relative grid gap-8 md:grid-cols-4">
+
+
+            {/* Step 1 */}
+            <div className="relative text-center">
+
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary text-sm font-bold !text-white">
+                01
+              </div>
+
+              <h3 className="mt-4 font-semibold text-foreground">
+                Find a Service
+              </h3>
+
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Browse services and use categories, location and filters
+                to find the service you need.
+              </p>
+
+            </div>
+
+
+            {/* Step 2 */}
+            <div className="relative text-center">
+
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary text-sm font-bold !text-white">
+                02
+              </div>
+
+              <h3 className="mt-4 font-semibold text-foreground">
+                Choose a Provider
+              </h3>
+
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Compare providers, check their information, verification
+                status and customer ratings.
+              </p>
+
+            </div>
+
+
+            {/* Step 3 */}
+            <div className="relative text-center">
+
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary text-sm font-bold !text-white">
+                03
+              </div>
+
+              <h3 className="mt-4 font-semibold text-foreground">
+                Book the Service
+              </h3>
+
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Select the provider, choose your requirements and submit
+                your booking request.
+              </p>
+
+            </div>
+
+
+            {/* Step 4 */}
+            <div className="relative text-center">
+
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary text-sm font-bold !text-white">
+                04
+              </div>
+
+              <h3 className="mt-4 font-semibold text-foreground">
+                Get Your Service
+              </h3>
+
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                The provider accepts your request and delivers the
+                requested service.
+              </p>
+
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+ <SectionHeader
+        title="Services"
+        subtitle="Find trusted service providers for your needs."
+      />
+
+      {/* =====================================================
+          CATEGORIES
+          ===================================================== */}
+      <div className="mb-5 flex flex-wrap gap-2">
+
+        <button
+          type="button"
+          onClick={() => setSelectedCategoryId("all")}
+          className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+            selectedCategoryId === "all"
+              ? "border-primary bg-primary text-white"
+              : "border-border bg-card text-foreground hover:border-primary"
+          }`}
+        >
+          All
+        </button>
+
+        {(categories.data || []).map((category) => (
+
+          <button
+            key={category.id}
+            type="button"
+            onClick={() => setSelectedCategoryId(category.id)}
+            className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+              selectedCategoryId === category.id
+                ? "border-primary bg-primary text-white"
+                : "border-border bg-card text-foreground hover:border-primary"
+            }`}
+          >
+            {category.name}
+          </button>
+
+        ))}
+
+      </div>
+
+
+      {/* =====================================================
+          SERVICES
+          ===================================================== */}
+      {isLoading || categories.isLoading ? (
+
+        <LoadingGrid />
+
+      ) : (
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+
+          {filteredServices.map((service) => (
+
+            <ServiceCard
+              key={service.id}
+              service={service}
+            />
+
+          ))}
+
+        </div>
+
+      )}
+
+
+      {/* =====================================================
+          HOW IT WORKS - DETAILED
+          ===================================================== */}
+      <section
+        id="how-it-works"
+        className="mt-14 rounded-2xl border bg-card p-6 shadow-sm md:p-8"
+      >
+
+        <div className="text-center">
+
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
+            Customer Guide
+          </p>
+
+          <h2 className="mt-2 text-2xl font-bold text-foreground md:text-3xl">
+            Understanding the Booking Process
+          </h2>
+
+          <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+            SevaLink makes it easier to discover trusted professionals,
+            submit service requests and manage your bookings.
+          </p>
+
+        </div>
+
+
+        <div className="mt-8 grid gap-5 md:grid-cols-3">
+
+
+          {/* Step 1 */}
+          <div className="rounded-2xl border bg-background p-6 text-center transition-shadow hover:shadow-md">
+
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary text-sm font-bold !text-white">
+              01
+            </div>
+
+            <h3 className="mt-4 font-semibold text-foreground">
+              Find a Service
+            </h3>
+
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Browse available services and use categories, location and
+              filters to find the right service for your requirement.
+            </p>
+
+          </div>
+
+
+          {/* Step 2 */}
+          <div className="rounded-2xl border bg-background p-6 text-center transition-shadow hover:shadow-md">
+
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary text-sm font-bold !text-white">
+              02
+            </div>
+
+            <h3 className="mt-4 font-semibold text-foreground">
+              Choose a Provider
+            </h3>
+
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              View provider information, verification details, services and
+              ratings before making your booking.
+            </p>
+
+          </div>
+
+
+          {/* Step 3 */}
+          <div className="rounded-2xl border bg-background p-6 text-center transition-shadow hover:shadow-md">
+
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary text-sm font-bold !text-white">
+              03
+            </div>
+
+            <h3 className="mt-4 font-semibold text-foreground">
+              Book & Get Service
+            </h3>
+
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Submit your booking request, manage the booking and receive
+              the requested service from the provider.
+            </p>
+
+          </div>
+
+        </div>
+
+      </section>
+
+    </motion.div>
+  );
+}
+
+
+export function ProvidersPage() {
+  const steps = [
+    {
+      number: "01",
+      title: "Register",
+      description:
+        "Create your SevaLink provider account by entering your basic personal and business details.",
+    },
+    {
+      number: "02",
+      title: "Create Your Profile",
+      description:
+        "Add your service category, experience, location, pricing, contact details and other information.",
+    },
+    {
+      number: "03",
+      title: "Submit for Verification",
+      description:
+        "Submit the required details and certificates for verification by the SevaLink administration.",
+    },
+    {
+      number: "04",
+      title: "Get Approved",
+      description:
+        "After successful verification, your provider account will be approved by the administrator.",
+    },
+    {
+      number: "05",
+      title: "Receive Service Requests",
+      description:
+        "Customers can discover your services and send booking requests based on their requirements.",
+    },
+    {
+      number: "06",
+      title: "Accept & Provide Service",
+      description:
+        "Review requests, accept suitable bookings and provide the requested service to the customer.",
+    },
+    {
+      number: "07",
+      title: "Complete Booking",
+      description:
+        "Update the booking status after completing the service and keep track of your service history.",
+    },
+    {
+      number: "08",
+      title: "Build Your Reputation",
+      description:
+        "Customers can rate and review your service, helping you build trust and attract more customers.",
+    },
+  ];
+
+  return (
+    <motion.div {...fade} className="space-y-8">
+
+      {/* Header */}
+      <SectionHeader
+        title="Welcome to SevaLink"
+        subtitle="Become a trusted service provider and connect with customers who need your services."
+      />
+
+      {/* Introduction */}
+<div
+  id="provider-guide"
+  className="rounded-2xl border bg-card p-6 shadow-sm"
+>
+  <h2 className="text-2xl font-bold">
+    How SevaLink Works for Providers
+  </h2>
+
+  <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
+    SevaLink connects service providers with customers looking for
+    reliable services. As a provider, you can create your profile,
+    submit your details for verification, receive service requests,
+    manage bookings and build your reputation through customer reviews.
+  </p>
+</div>
+   {/* Simple Flow */}
+      <div className="rounded-2xl border bg-white p-6">
+        <h2 className="text-xl font-bold">
+          SevaLink Provider Journey
+        </h2>
+
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          {[
+            "Register",
+            "Profile",
+            "Verification",
+            "Approval",
+            "Service Request",
+            "Accept",
+            "Complete",
+            "Review",
+          ].map((item, index, array) => (
+            <div
+              key={item}
+              className="flex items-center gap-3"
+            >
+              <div className="rounded-xl border bg-primary text-white px-4 py-3 text-sm font-medium shadow-sm">
+                {item}
+              </div>
+
+              {index < array.length - 1 && (
+                <span className="text-lg text-muted-foreground">
+                  →
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Working Flow */}
+      <div>
+        <div className="mb-6">
+          <h2 className="text-xl font-bold">
+            Provider Working Flow
+          </h2>
+
+          <p className="mt-1 text-sm text-muted-foreground">
+            Follow these steps to start providing services through SevaLink.
+          </p>
+        </div>
+
+        <div className="grid gap-5 md:grid-cols-2">
+          {steps.map((step, index) => (
+            <motion.div
+              key={step.number}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.08 }}
+              whileHover={{ y: -4 }}
+              className="relative rounded-2xl border bg-card p-6 shadow-sm"
+            >
+              {/* Step Number */}
+              <div className="mb-4 flex items-center gap-4">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-bold !text-white">
+                  {step.number}
+                </div>
+
+                <h3 className="text-lg font-semibold">
+                  {step.title}
+                </h3>
+              </div>
+
+              <p className="text-sm leading-6 text-muted-foreground">
+                {step.description}
+              </p>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+
+      {/* Provider Benefits */}
+      <div className="rounded-2xl border bg-card p-6 shadow-sm">
+        <h2 className="text-xl font-bold">
+          Why Become a SevaLink Provider?
+        </h2>
+
+        <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Benefit
+            title="Reach Customers"
+            description="Get discovered by customers looking for your services."
+          />
+
+          <Benefit
+            title="Manage Bookings"
+            description="Keep track of service requests and booking status."
+          />
+
+          <Benefit
+            title="Build Trust"
+            description="Receive ratings and reviews from your customers."
+          />
+
+          <Benefit
+            title="Grow Your Business"
+            description="Expand your customer base through SevaLink."
+          />
+        </div>
+      </div>
+
+      {/* Call to Action */}
+<div className="rounded-2xl bg-primary p-8 text-center">
+  <h2 className="text-2xl font-bold !text-white">
+    Ready to Join SevaLink?
+  </h2>
+
+  <p className="mx-auto mt-2 max-w-xl text-sm !text-white">
+    Register as a service provider and start connecting with customers
+    through SevaLink.
+  </p>
+
+ <Link to="/register?type=provider">
+  <Button
+    className="mt-5"
+    variant="secondary"
+  >
+    Register as Provider
+  </Button>
+</Link>
+</div>
+
+    </motion.div>
+  );
+}
+
+
+/* Benefit Component */
+
+function Benefit({ title, description }) {
+  return (
+    <div className="rounded-xl border p-4">
+      <h3 className="font-semibold">
+        {title}
+      </h3>
+
+      <p className="mt-2 text-sm text-muted-foreground">
+        {description}
+      </p>
+    </div>
+  );
+}
+
+
+
+export function ServiceDetailsPage() {
+  const { id } = useParams();
+  const { data, isLoading, isError } = useServiceQuery(id);
+
+  if (isLoading) return <LoadingGrid count={1} />;
+  if (isError || !data) return <ErrorState />;
+
+  return (
+    <motion.div className="space-y-6" {...fade}>
+      <Card className="space-y-4">
+        <Badge>Service</Badge>
+        <h1 className="text-2xl font-bold">{data.name}</h1>
+        <p className="text-muted-foreground">{data.description || "Service details will be added soon."}</p>
+        <Link to="/customer/booking/new">
+          <Button>Book Now</Button>
+        </Link>
+      </Card>
+    </motion.div>
+  );
+}
+
+export function ProviderDetailsPage() {
+  const { id } = useParams();
+  const { data, isLoading } = useProviderQuery(id);
+
+  if (isLoading) return <LoadingGrid count={1} />;
+  if (!data) return <EmptyState title="Provider not found" />;
+
+  return (
+    <motion.div className="space-y-6" {...fade}>
+      <Card className="grid gap-6 lg:grid-cols-[220px_1fr]">
+        <img src={data.image} alt={data.name} className="h-52 w-full rounded-2xl object-cover" />
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-bold">{data.name}</h1>
+            {data.verified && <Badge variant="success">Verified</Badge>}
+          </div>
+          <p className="mt-1 text-muted-foreground">
+            {data.services_label || data.service_names?.join(", ") || "Services not selected"} • {data.location}
+          </p>
+          <p className="mt-4 text-sm text-muted-foreground">{data.about}</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {data.certificates.map((certificate) => (
+              <Badge key={certificate} variant="outline">
+                {certificate}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      </Card>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <h3 className="mb-3 font-semibold">Business Information</h3>
+          <p className="text-sm text-muted-foreground">Experience: {data.experience}</p>
+          <p className="text-sm text-muted-foreground">Completed Jobs: {data.jobs}+</p>
+          <p className="text-sm text-muted-foreground">Rating: {data.rating}/5</p>
+        </Card>
+        <Card>
+          <h3 className="mb-3 font-semibold">Contact</h3>
+          <p className="text-sm text-muted-foreground">support@sevalink-provider.app</p>
+          <p className="text-sm text-muted-foreground">+91 98888 44556</p>
+          <Button className="mt-4">Request Callback</Button>
+        </Card>
+      </div>
+    </motion.div>
+  );
+}
+
+export function SearchPage() {
+  const categories = useCategoriesQuery();
+  const { data, isLoading } = useServicesQuery();
+  const [selectedCategoryId, setSelectedCategoryId] = useState("all");
+  const [location, setLocation] = useState("");
+  const filteredServices = useMemo(() => {
+    if (selectedCategoryId === "all") return data || [];
+    return (data || []).filter((service) => String(service.category_id) === String(selectedCategoryId));
+  }, [data, selectedCategoryId]);
+
+  if (isLoading || categories.isLoading) return <LoadingGrid />;
+
+  return (
+    <motion.div className="space-y-5" {...fade}>
+      <SectionHeader title="Search Services" subtitle="Use advanced filters and smart suggestions." />
+      <Card className="grid gap-3 lg:grid-cols-6">
+        <Input className="lg:col-span-2" placeholder="What service are you looking for?" />
+        <div className="lg:col-span-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setSelectedCategoryId("all")}
+            className={`rounded-full border px-4 py-2 text-sm font-medium transition ${selectedCategoryId === "all" ? "border-primary bg-primary text-white" : "border-border bg-card text-foreground hover:border-primary"}`}>
+            All
+          </button>
+          {(categories.data || []).map((category) => (
+            <button
+              key={category.id}
+              type="button"
+              onClick={() => setSelectedCategoryId(category.id)}
+              className={`rounded-full border px-4 py-2 text-sm font-medium transition ${selectedCategoryId === category.id ? "border-primary bg-primary text-white" : "border-border bg-card text-foreground hover:border-primary"}`}>
+              {category.name}
+            </button>
+          ))}
+        </div>
+        <LocationSelector value={location} onChange={setLocation} />
+        <Select placeholder="Price" options={[{ label: "Under ₹1500", value: "1500" }]} />
+        <Select placeholder="Sort" options={[{ label: "Recommended", value: "rec" }]} />
+      </Card>
+      {filteredServices.length ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {filteredServices.map((service) => (
+            <ServiceCard key={service.id} service={service} />
+          ))}
+        </div>
+      ) : (
+        <EmptyState title="No services found" description="Try changing filters or location." />
+      )}
+    </motion.div>
+  );
+}
+
+export function AboutPage() {
+  const differences = [
+    {
+      icon: ShieldCheck,
+      title: "Verified Providers",
+      description: "All service providers are verified for your safety.",
+      iconBg: "bg-primary/10 text-primary border border-primary/20",
+    },
+    {
+      icon: Star,
+      title: "Transparent Ratings",
+      description: "Real reviews from real customers.",
+      iconBg: "bg-primary/10 text-primary border border-primary/20",
+    },
+    {
+      icon: MapPin,
+      title: "Local Focus",
+      description: "Support local talent and businesses.",
+      iconBg: "bg-primary/10 text-primary border border-primary/20",
+    },
+    {
+      icon: Calendar,
+      title: "Easy Booking",
+      description: "Book, track and manage services in one place.",
+      iconBg: "bg-primary/10 text-primary border border-primary/20",
+    },
+    {
+      icon: LayoutGrid,
+      title: "Wide Range of Services",
+      description: "From home services to healthcare and more.",
+      iconBg: "bg-primary/10 text-primary border border-primary/20",
+    },
+  ];
+
+  const journeySteps = [
+    {
+      icon: Lightbulb,
+      phase: "Ideation",
+      description: "Identified the need for a trusted service platform.",
+      active: false,
+    },
+    {
+      icon: Code,
+      phase: "Development",
+      description: "Built with modern technologies and best practices.",
+      active: false,
+    },
+    {
+      icon: Rocket,
+      phase: "Phase 1",
+      description: "Current phase - core features and modules in progress.",
+      active: true,
+    },
+    {
+      icon: TrendingUp,
+      phase: "Future",
+      description: "Expanding services, more providers and better experiences.",
+      active: false,
+    },
+  ];
+
+  return (
+    <motion.div
+      className="space-y-8"
+      {...fade}
+    >
+      {/* ── Hero Section ──────────────────────────────────────────────────────── */}
+      <section className="rounded-2xl border bg-card p-6 shadow-sm">
+        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[1.1fr_1fr] lg:items-center">
+          <div className="space-y-6">
+            <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3.5 py-1 text-xs font-bold uppercase tracking-wider text-primary">
+              <MapPin className="h-3.5 w-3.5 text-primary fill-primary/20" />
+              ABOUT SEVALINK
+            </div>
+            <h1 className="max-w-xl text-4xl font-black leading-tight tracking-tight text-foreground lg:text-5xl">
+              Building a Stronger Community Through{" "}
+              <span className="text-primary">Better Services</span>
+            </h1>
+            <p className="max-w-lg text-base leading-7 text-muted-foreground">
+              SevaLink is a unified service booking platform that connects customers with trusted, verified service providers — making everyday life easier, safer and more convenient.
+            </p>
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border bg-background p-2 shadow-sm">
+            <img
+              src={aboutHeroImage}
+              alt="SevaLink service providers"
+              className="h-80 w-full rounded-2xl object-cover sm:h-[360px] lg:h-[400px]"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* ── Our Mission & Vision ─────────────────────────────────────────────── */}
+      <section className="rounded-2xl border bg-card p-6 shadow-sm">
+        <div className="mx-auto max-w-7xl space-y-10">
+          <div className="text-center">
+            <h2 className="text-3xl font-black text-foreground">Our Mission & Vision</h2>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Mission Card */}
+            <div className="flex gap-5 rounded-2xl border bg-background p-6 shadow-sm transition hover:shadow-md">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                <Target className="h-6 w-6" />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-xl font-bold text-foreground">Our Mission</h3>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  To bridge the gap between customers and skilled service providers through a trusted, transparent and easy-to-use platform.
+                </p>
+              </div>
+            </div>
+
+            {/* Vision Card */}
+            <div className="flex gap-5 rounded-2xl border bg-background p-6 shadow-sm transition hover:shadow-md">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                <Eye className="h-6 w-6" />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-xl font-bold text-foreground">Our Vision</h3>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  To become the most trusted and preferred service booking platform, empowering local professionals and communities everywhere.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── What Makes SevaLink Different? ─────────────────────────────────── */}
+      <section className="rounded-2xl border bg-card p-6 shadow-sm">
+        <div className="mx-auto max-w-7xl space-y-10">
+          <div className="text-center space-y-2">
+            <h2 className="text-3xl font-black text-foreground">What Makes SevaLink Different?</h2>
+            <p className="text-sm text-muted-foreground">
+              We focus on trust, convenience and community — because your time and safety matter.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            {differences.map((item) => {
+              const Icon = item.icon;
+              return (
+                <div
+                  key={item.title}
+                  className="flex flex-col items-center text-center space-y-3 rounded-2xl border bg-background p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
+                >
+                  <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${item.iconBg}`}>
+                    <Icon className="h-6 w-6" />
+                  </div>
+                  <h3 className="text-base font-bold text-foreground">{item.title}</h3>
+                  <p className="text-xs leading-5 text-muted-foreground">{item.description}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Our Journey ────────────────────────────────────────────────────── */}
+      <section className="rounded-2xl border bg-card p-6 shadow-sm">
+        <div className="mx-auto max-w-7xl space-y-12">
+          <div className="text-center space-y-2">
+            <h2 className="text-3xl font-black text-foreground">Our Journey</h2>
+            <p className="max-w-2xl mx-auto text-sm text-muted-foreground">
+              From a simple idea to a platform that connects communities — SevaLink is built with a vision for a better, more connected future.
+            </p>
+          </div>
+
+          <div className="relative">
+            {/* Timeline line */}
+            <div className="absolute top-7 left-[12%] right-[12%] hidden h-0.5 bg-blue-200 dark:bg-slate-700 lg:block" />
+
+            <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
+              {journeySteps.map((step) => {
+                const Icon = step.icon;
+                return (
+                  <div key={step.phase} className="relative flex flex-col items-center text-center space-y-3">
+                    <div
+                      className={`z-10 flex h-14 w-14 items-center justify-center rounded-full text-white transition ${
+                        step.active
+                          ? "bg-primary ring-4 ring-primary/20 shadow-md"
+                          : "bg-primary hover:bg-primary/90"
+                      }`}
+                    >
+                      <Icon className="h-6 w-6" />
+                    </div>
+                    <h3 className="text-lg font-bold text-foreground">{step.phase}</h3>
+                    <p className="text-xs leading-5 text-muted-foreground">{step.description}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Join SevaLink Today Banner ──────────────────────────────────────── */}
+      <section className="rounded-2xl border bg-card p-6 shadow-sm">
+        <div className="relative overflow-hidden rounded-2xl bg-primary p-8 text-center text-white shadow-sm sm:p-10">
+          <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-4 max-w-xl">
+              <h2 className="text-3xl font-black tracking-tight sm:text-4xl">Join SevaLink Today</h2>
+              <p className="text-sm text-blue-100 sm:text-base">
+                Whether you need a service or want to offer your skills, SevaLink is the right place.
+              </p>
+              <div className="pt-2 flex flex-wrap gap-3">
+                <Link to="/services">
+                  <Button className="rounded-xl bg-white text-blue-700 hover:bg-blue-50 font-semibold px-6 shadow-sm">
+                    Find a Service <ArrowRight className="ml-1.5 h-4 w-4" />
+                  </Button>
+                </Link>
+                <Link to="/register?type=provider">
+                  <Button variant="outline" className="rounded-xl border-white/40 bg-transparent text-white hover:bg-white/10 font-semibold px-6">
+                    Become a Provider <ArrowRight className="ml-1.5 h-4 w-4" />
+                  </Button>
+                </Link>
+              </div>
+            </div>
+
+            <div className="hidden lg:block text-right">
+              <span className="text-3xl font-black italic leading-tight text-white/95 drop-shadow-sm">
+                Together <br /> We Build <br /> Stronger Communities
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </motion.div>
+  );
+}
+
+export function PrivacyPolicyPage() {
+  return (
+    <motion.div className="mx-auto max-w-4xl space-y-8 pt-8" {...fade}>
+      <div className="space-y-3">
+
+        <h1 className="text-4xl font-black text-foreground">Privacy Policy</h1>
+        <p className="text-sm text-muted-foreground">Last updated: September 20, 2026</p>
+      </div>
+
+      <div className="space-y-6 rounded-2xl border bg-card p-6 text-sm leading-7 text-muted-foreground shadow-sm sm:p-8">
+        <section className="space-y-2">
+          <h2 className="text-xl font-bold text-foreground">1. Introduction</h2>
+          <p>
+            Welcome to SevaLink (&quot;we&quot;, &quot;our&quot;, or &quot;us&quot;). We respect your privacy and are committed to protecting the personal data you share with us through our web platform, mobile application, and WhatsApp messaging services.
+          </p>
+        </section>
+
+        <section className="space-y-2">
+          <h2 className="text-xl font-bold text-foreground">2. Information We Collect</h2>
+          <p>We collect information to provide better service booking experiences:</p>
+          <ul className="list-disc pl-5 space-y-1">
+            <li><strong>Account & Contact Info:</strong> Name, phone number, email address, and service delivery addresses.</li>
+            <li><strong>WhatsApp Interaction Data:</strong> Phone number, incoming request messages, and booking confirmation preferences sent via WhatsApp Cloud API.</li>
+            <li><strong>Booking & Service Details:</strong> Selected categories, dates, ratings, and feedback.</li>
+          </ul>
+        </section>
+
+        <section className="space-y-2">
+          <h2 className="text-xl font-bold text-foreground">3. How We Use Your Information</h2>
+          <p>Your data is used strictly to:</p>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Connect customers with verified local service providers.</li>
+            <li>Send booking confirmations, status updates, and notifications via WhatsApp and SMS.</li>
+            <li>Provide customer support and resolve complaints.</li>
+          </ul>
+        </section>
+
+        <section className="space-y-2">
+          <h2 className="text-xl font-bold text-foreground">4. Data Sharing & Security</h2>
+          <p>
+            We do not sell your personal data. We only share necessary service details (such as service name and address) with assigned, verified service providers to fulfill your booking.
+          </p>
+        </section>
+
+        <section className="space-y-2">
+          <h2 className="text-xl font-bold text-foreground">5. Contact & Data Deletion</h2>
+          <p>
+            If you wish to request data deletion or have questions regarding this Privacy Policy, please contact our privacy team at <a href="mailto:privacy@sevalink.app" className="font-semibold text-primary underline">privacy@sevalink.app</a>.
+          </p>
+        </section>
+      </div>
+    </motion.div>
+  );
+}

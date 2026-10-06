@@ -1,0 +1,564 @@
+import 'dart:io';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../models/models.dart';
+
+final supabase = Supabase.instance.client;
+
+/// Web client ID from Google Cloud Console (same one configured in Supabase).
+const _webClientId =
+    '389406237420-ubj6l6d05oc4ldk9tq4jcnm27m0a5t5k.apps.googleusercontent.com';
+
+// ── Auth ──────────────────────────────────────────────────────
+
+Future<Map<String, dynamic>> signInWithGoogle() async {
+  final googleSignIn = GoogleSignIn(serverClientId: _webClientId);
+  final googleUser = await googleSignIn.signIn();
+  if (googleUser == null) throw Exception('Google sign-in cancelled');
+
+  final googleAuth = await googleUser.authentication;
+  final idToken = googleAuth.idToken;
+  final accessToken = googleAuth.accessToken;
+  if (idToken == null) throw Exception('Failed to get Google ID token');
+
+  final res = await supabase.auth.signInWithIdToken(
+    provider: OAuthProvider.google,
+    idToken: idToken,
+    accessToken: accessToken,
+  );
+  if (res.user == null) throw Exception('Google sign-in failed');
+
+  // Google creates the auth user first. Keep the session and create a minimal
+  // profile so the app can collect the remaining required details.
+  final existing = await supabase
+      .from('profiles')
+      .select('id, role, phone, full_name')
+      .eq('id', res.user!.id)
+      .maybeSingle();
+
+  if (existing == null) {
+    await supabase.from('profiles').insert({
+      'id': res.user!.id,
+      'full_name': res.user!.userMetadata?['full_name'] ??
+          res.user!.userMetadata?['name'] ?? '',
+      'phone': '',
+      'role': 'customer',
+      'approval_status': 'approved',
+    });
+  } else if (existing['role'] != 'customer') {
+    await supabase.auth.signOut();
+    throw Exception('Invalid account. Please log in with a customer account.');
+  }
+
+  final profile = await getProfile(res.user!.id);
+  return {'user': res.user, 'profile': profile};
+}
+
+Future<Map<String, dynamic>> signInWithEmail({
+  required String email,
+  required String password,
+}) async {
+  final res = await supabase.auth.signInWithPassword(email: email, password: password);
+  if (res.user == null) throw Exception('Sign in failed');
+  final profile = await getProfile(res.user!.id);
+  if (profile.role != 'customer') {
+    await supabase.auth.signOut();
+    throw Exception('Invalid account. Please log in with a customer account.');
+  }
+  return {'user': res.user, 'profile': profile};
+}
+
+Future<Map<String, dynamic>> signUpWithEmail({
+  required String email,
+  required String password,
+  required String fullName,
+  required String phone,
+  String address = '',
+  String role = 'customer',
+  File? avatarFile,
+}) async {
+  final res = await supabase.auth.signUp(
+    email: email,
+    password: password,
+    data: {
+      'full_name': fullName,
+      'phone': phone,
+      'address': address,
+      'role': role,
+    },
+  );
+  if (res.user == null) throw Exception('Registration failed');
+
+  // Upload avatar if provided
+  if (avatarFile != null) {
+    try {
+      final ext = avatarFile.path.split('.').last;
+      final path = '${res.user!.id}/avatar.$ext';
+      await supabase.storage.from('avatars').upload(
+        path,
+        avatarFile,
+        fileOptions: const FileOptions(upsert: true),
+      );
+      final url = supabase.storage.from('avatars').getPublicUrl(path);
+      await supabase.from('profiles').update({'avatar_url': url}).eq('id', res.user!.id);
+    } catch (_) {
+      // Avatar upload failure is non-fatal
+    }
+  }
+
+  // Do not let an auto-created session bypass the email confirmation screen.
+  if (res.session != null) await supabase.auth.signOut();
+  return {'user': res.user};
+}
+
+Future<void> signOut() async {
+  // Clear the native Google session as well as the Supabase session. Without
+  // this, GoogleSignIn reuses the previously selected account on next login.
+  try {
+    await GoogleSignIn(serverClientId: _webClientId).signOut();
+  } finally {
+    await supabase.auth.signOut();
+  }
+}
+
+Future<void> resetPassword(String email) async {
+  await supabase.auth.resetPasswordForEmail(email);
+}
+
+// ── Profile ───────────────────────────────────────────────────
+
+Future<AppUser> getProfile(String userId) async {
+  final data = await supabase.from('profiles').select('*').eq('id', userId).single();
+  return AppUser.fromJson(data);
+}
+
+Future<AppUser> updateProfile(String userId, Map<String, dynamic> updates) async {
+  final data =
+      await supabase.from('profiles').update(updates).eq('id', userId).select().single();
+  return AppUser.fromJson(data);
+}
+
+/// Save FCM token to profiles table (calls the SQL function we added)
+Future<void> upsertFcmToken(String userId, String token) async {
+  await supabase.rpc('upsert_fcm_token', params: {'p_user_id': userId, 'p_token': token});
+}
+
+// ── Categories ────────────────────────────────────────────────
+
+Future<List<ServiceCategory>> getCategories() async {
+  final data = await supabase.from('categories').select('*').order('name');
+  return (data as List).map((e) => ServiceCategory.fromJson(e)).toList();
+}
+
+// ── Services ──────────────────────────────────────────────────
+
+Future<List<ServiceModel>> getServices() async {
+  final data = await supabase
+      .from('services')
+      .select('id, name, description, category_id, icon, category:categories(id, name)')
+      .order('name');
+  return (data as List).map((e) => ServiceModel.fromJson(e)).toList();
+}
+
+// ── Providers by Service ──────────────────────────────────────
+
+Future<List<ProviderModel>> getProvidersByService(String serviceId) async {
+  final psData = await supabase
+      .from('provider_services')
+      .select('provider_id, price')
+      .eq('service_id', serviceId);
+  final rows = (psData as List).cast<Map<String, dynamic>>();
+  if (rows.isEmpty) return [];
+
+  final providerIds = rows.map((row) => row['provider_id'].toString()).toList();
+  final priceMap = {
+    for (final row in rows) row['provider_id'].toString(): (row['price'] as num?)?.toDouble() ?? 0.0,
+  };
+
+  final pData = await supabase
+      .from('providers')
+      .select('*')
+      .inFilter('id', providerIds)
+      .or('verified.eq.true,status.eq.approved')
+      .order('rating', ascending: false);
+
+  final filteredRows = (pData as List).cast<Map<String, dynamic>>();
+  final rowsToUse = filteredRows.isNotEmpty
+      ? filteredRows
+      : (await supabase.from('providers').select('*').inFilter('id', providerIds).order('rating', ascending: false))
+          as List;
+
+  return rowsToUse.map((e) {
+    final p = ProviderModel.fromJson(Map<String, dynamic>.from(e as Map));
+    return ProviderModel(
+      id: p.id,
+      businessName: p.businessName,
+      name: p.name,
+      location: p.location,
+      rating: p.rating,
+      about: p.about,
+      price: priceMap[p.id] ?? p.price,
+      imageUrl: p.imageUrl,
+      verified: p.verified,
+      experience: p.experience,
+      certificates: p.certificates,
+      services: p.services,
+    );
+  }).toList();
+}
+
+Future<ProviderModel> getProviderById(String providerId) async {
+  final data =
+      await supabase.from('providers').select('*').eq('id', providerId).single();
+  final provider = ProviderModel.fromJson(Map<String, dynamic>.from(data as Map));
+  final services = await getProviderServiceRows(provider.id);
+  return ProviderModel(
+    id: provider.id,
+    businessName: provider.businessName,
+    name: provider.name,
+    location: provider.location,
+    rating: provider.rating,
+    about: provider.about,
+    price: provider.price,
+    imageUrl: provider.imageUrl,
+    verified: provider.verified,
+    experience: provider.experience,
+    certificates: provider.certificates,
+    services: services,
+  );
+}
+
+Future<List<ProviderServiceModel>> getProviderServiceRows(String providerId) async {
+  final data = await supabase
+      .from('provider_services')
+      .select('service_id, price, service:services(id, name, description)')
+      .eq('provider_id', providerId);
+
+  return (data as List).map((row) {
+    final map = Map<String, dynamic>.from(row as Map);
+    final service = Map<String, dynamic>.from((map['service'] ?? {}) as Map);
+    return ProviderServiceModel(
+      id: map['service_id'].toString(),
+      serviceId: map['service_id'].toString(),
+      name: service['name'] as String? ?? 'Service',
+      description: service['description'] as String? ?? '',
+      price: (map['price'] as num?)?.toDouble() ?? 0,
+    );
+  }).toList();
+}
+
+// ── Bookings ──────────────────────────────────────────────────
+
+Future<List<BookingModel>> getCustomerBookings(String customerId) async {
+  final data = await supabase
+      .from('bookings')
+      .select(
+        '*, provider:providers!bookings_provider_id_fkey(business_name), service:services!bookings_service_id_fkey(name)',
+      )
+      .eq('customer_id', customerId)
+      .order('created_at', ascending: false);
+  return (data as List).map((e) => BookingModel.fromJson(e)).toList();
+}
+
+Future<BookingModel> createBooking({
+  required String customerId,
+  required String providerId,
+  required String serviceId,
+  required String serviceTitle,
+  required String providerName,
+  required String customerName,
+  required String bookingDate,
+  required String bookingTime,
+  required String address,
+  String? notes,
+  double amount = 0,
+}) async {
+  // The picker returns a local time. Store its UTC instant in the timestamptz
+  // column so reading it back and converting to local time does not add 5:30.
+  final localScheduledDate = DateTime.parse(
+    '${bookingDate}T${bookingTime.length == 5 ? '$bookingTime:00' : bookingTime}',
+  );
+  final scheduledDate = localScheduledDate.toUtc().toIso8601String();
+  final data = await supabase
+      .from('bookings')
+      .insert({
+        'customer_id': customerId,
+        'provider_id': providerId,
+        'service_id': serviceId,
+        'service_title': serviceTitle,
+        'provider_name': providerName,
+        'customer_name': customerName,
+        'scheduled_date': scheduledDate,
+        'booking_date': bookingDate,
+        'booking_time': bookingTime,
+        'address': address,
+        'notes': notes ?? '',
+        'amount': amount,
+        'status': 'pending',
+      })
+      .select()
+      .single();
+  return BookingModel.fromJson(data);
+}
+
+Future<Map<String, dynamic>> createPayment({
+  required String bookingId,
+  required String razorpayPaymentId,
+  String razorpayOrderId = '',
+  String razorpaySignature = '',
+  double amount = 0,
+  String currency = 'INR',
+  String status = 'captured',
+  String paymentMethod = 'razorpay',
+  Map<String, dynamic> paymentMetadata = const <String, dynamic>{},
+}) async {
+  final data = await supabase
+      .from('payments')
+      .insert({
+        'booking_id': bookingId,
+        'razorpay_payment_id': razorpayPaymentId,
+        'razorpay_order_id': razorpayOrderId,
+        'razorpay_signature': razorpaySignature,
+        'amount': amount,
+        'currency': currency,
+        'status': status,
+        'payment_method': paymentMethod,
+        'payment_metadata': paymentMetadata,
+      })
+      .select()
+      .single();
+  return Map<String, dynamic>.from(data as Map);
+}
+
+Future<BookingModel> createBookingWithPayment({
+  required String customerId,
+  required String providerId,
+  required String serviceId,
+  required String serviceTitle,
+  required String providerName,
+  required String customerName,
+  required String bookingDate,
+  required String bookingTime,
+  required String address,
+  String? notes,
+  double amount = 0,
+  required String razorpayPaymentId,
+  String razorpayOrderId = '',
+  String razorpaySignature = '',
+  double paymentAmount = 0,
+  String currency = 'INR',
+  String paymentStatus = 'captured',
+  String paymentMethod = 'razorpay',
+  Map<String, dynamic> paymentMetadata = const <String, dynamic>{},
+}) async {
+  final createdBooking = await createBooking(
+    customerId: customerId,
+    providerId: providerId,
+    serviceId: serviceId,
+    serviceTitle: serviceTitle,
+    providerName: providerName,
+    customerName: customerName,
+    bookingDate: bookingDate,
+    bookingTime: bookingTime,
+    address: address,
+    notes: notes,
+    amount: amount,
+  );
+
+  final createdPayment = await createPayment(
+    bookingId: createdBooking.id,
+    razorpayPaymentId: razorpayPaymentId,
+    razorpayOrderId: razorpayOrderId,
+    razorpaySignature: razorpaySignature,
+    amount: paymentAmount,
+    currency: currency,
+    status: paymentStatus,
+    paymentMethod: paymentMethod,
+    paymentMetadata: paymentMetadata,
+  );
+
+  final data = await supabase
+      .from('bookings')
+      .update({'payment_id': createdPayment['id']})
+      .eq('id', createdBooking.id)
+      .select(
+        '*, provider:providers!bookings_provider_id_fkey(business_name), service:services!bookings_service_id_fkey(name)',
+      )
+      .single();
+  return BookingModel.fromJson(data);
+}
+
+Future<void> updateBookingStatus(String bookingId, String status) async {
+  await supabase.from('bookings').update({'status': status}).eq('id', bookingId);
+}
+
+/// Customer accepts the provider's proposed reschedule date.
+/// Copies proposed_date → scheduled_date and clears proposal fields.
+Future<void> acceptReschedule(String bookingId) async {
+  final current = await supabase
+      .from('bookings')
+      .select('proposed_date')
+      .eq('id', bookingId)
+      .single();
+  await supabase.from('bookings').update({
+    'status': 'accepted',
+    'scheduled_date': current['proposed_date'],
+    'proposed_date': null,
+    'reschedule_note': null,
+  }).eq('id', bookingId);
+}
+
+/// Customer counter-proposes their own time back to the provider.
+Future<void> counterReschedule(String bookingId, DateTime proposedDate, {String note = ''}) async {
+  await supabase.from('bookings').update({
+    'status': 'reschedule_counter',
+    'proposed_date': proposedDate.toUtc().toIso8601String(),
+    'reschedule_note': note.isNotEmpty ? note : null,
+  }).eq('id', bookingId);
+}
+
+Future<List<Map<String, dynamic>>> getProviderFeedback(String providerId) async {
+  final data = await supabase
+      .from('booking_feedback')
+      .select('*, profiles(full_name), bookings(booking_code, service_title)')
+      .eq('provider_id', providerId)
+      .order('created_at', ascending: false);
+  return (data as List).map((item) => Map<String, dynamic>.from(item as Map)).toList();
+}
+
+Future<void> submitFeedback({
+  required String bookingId,
+  required String providerId,
+  required String customerId,
+  required int rating,
+  required String comment,
+}) async {
+  await supabase.from('booking_feedback').insert({
+    'booking_id': bookingId,
+    'provider_id': providerId,
+    'customer_id': customerId,
+    'rating': rating,
+    'comment': comment,
+  });
+}
+
+Future<void> submitComplaint({
+  required String bookingId,
+  required String providerId,
+  required String customerId,
+  required String serviceId,
+  required String subject,
+  required String comment,
+}) async {
+  await supabase.from('booking_complaints').insert({
+    'booking_id': bookingId,
+    'provider_id': providerId,
+    'customer_id': customerId,
+    'service_id': serviceId,
+    'subject': subject,
+    'comment': comment,
+  });
+}
+
+/// A complaint is unique to a booking, not to the service across all bookings.
+Future<bool> hasSubmittedComplaint({
+  required String bookingId,
+  required String customerId,
+}) async {
+  final row = await supabase
+      .from('booking_complaints')
+      .select('id')
+      .eq('booking_id', bookingId)
+      .eq('customer_id', customerId)
+      .maybeSingle();
+  return row != null;
+}
+
+// ── Notifications ─────────────────────────────────────────────
+
+Future<List<NotificationModel>> getNotifications(String userId) async {
+  final data = await supabase
+      .from('notifications')
+      .select('*')
+      .or('receiver_id.eq.$userId,user_id.eq.$userId')
+      .order('created_at', ascending: false);
+  return (data as List).map((e) => NotificationModel.fromJson(e)).toList();
+}
+
+Future<void> markNotificationRead(String notificationId) async {
+  await supabase.from('notifications').update({'is_read': true, 'read': true}).eq('id', notificationId);
+}
+
+Future<void> markAllNotificationsRead(String userId) async {
+  await supabase
+      .from('notifications')
+      .update({'is_read': true, 'read': true})
+      .or('receiver_id.eq.$userId,user_id.eq.$userId');
+}
+
+// ── Chat ──────────────────────────────────────────────────────
+
+bool isBookingChatEnabled(String status) => ['accepted', 'confirmed', 'reschedule_requested', 'reschedule_counter', 'in_progress', 'completed'].contains(status);
+
+Future<ConversationModel?> getConversationByBooking(String bookingId) async {
+  final data = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('booking_id', bookingId)
+      .maybeSingle();
+  if (data == null) return null;
+  return ConversationModel.fromJson(data);
+}
+
+Future<ConversationModel> ensureConversationForBooking(String bookingId) async {
+  final existing = await getConversationByBooking(bookingId);
+  if (existing != null) return existing;
+  try {
+    final id = await supabase.rpc('ensure_booking_conversation', params: {'p_booking_id': bookingId});
+    if (id != null) {
+      final data = await supabase.from('conversations').select('*').eq('id', id).single();
+      return ConversationModel.fromJson(data);
+    }
+  } catch (_) {}
+  final data = await supabase.from('conversations').select('*').eq('booking_id', bookingId).single();
+  return ConversationModel.fromJson(data);
+}
+
+Future<List<ChatMessage>> getMessages(String conversationId) async {
+  final data = await supabase
+      .from('messages')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .order('created_at', ascending: true);
+  return (data as List).map((e) => ChatMessage.fromJson(e)).toList();
+}
+
+Future<ChatMessage> sendMessage({
+  required String conversationId,
+  required String senderId,
+  required String message,
+  String? attachmentUrl,
+  String? attachmentType,
+}) async {
+  final data = await supabase
+      .from('messages')
+      .insert({
+        'conversation_id': conversationId,
+        'sender_id': senderId,
+        'message': message,
+        if (attachmentUrl != null) 'attachment_url': attachmentUrl,
+        if (attachmentType != null) 'attachment_type': attachmentType,
+      })
+      .select()
+      .single();
+  return ChatMessage.fromJson(data);
+}
+
+Future<void> markConversationRead(String conversationId, String userId) async {
+  await supabase
+      .from('messages')
+      .update({'is_read': true})
+      .eq('conversation_id', conversationId)
+      .neq('sender_id', userId)
+      .eq('is_read', false);
+}
